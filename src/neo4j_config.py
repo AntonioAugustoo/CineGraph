@@ -5,215 +5,431 @@ from neo4j import GraphDatabase
 # ==============================================================================
 
 class Neo4jDriver:
-    # TODO: Cole aqui a "Connection URI" que você copiou do Neo4j Aura
+    """
+    Driver Singleton para conexão com o Neo4j.
+    """
     neo4j_host = "neo4j+s://f217f659.databases.neo4j.io"
-    
-   
     neo4j_user = "neo4j"
-    
-    
-    neo4j_password = "h4KCKmkPtEpA7oxm24xufukETPSN-KQHnFDynf17mEI"    
+    neo4j_password = "h4KCKmkPtEpA7oxm24xufukETPSN-KQHnFDynf17mEI"
 
     driver = None
 
     @staticmethod
     def get_driver():
-        """
-        Retorna uma instância única do driver do Neo4j (Singleton)
-        e limpa o banco de dados para testes.
-        """
         if not Neo4jDriver.driver:
             Neo4jDriver.driver = GraphDatabase.driver(
-                Neo4jDriver.neo4j_host, 
+                Neo4jDriver.neo4j_host,
                 auth=(Neo4jDriver.neo4j_user, Neo4jDriver.neo4j_password)
             )
-            # Limpa o banco para garantir um estado limpo a cada execução
-            Neo4jDriver.driver.execute_query("MATCH (n) DETACH DELETE n")
         return Neo4jDriver.driver
 
+
 # ==============================================================================
-# CLASSES DE MODELO (ENTIDADES DO PROJETO CINEGRAPH)
+# MODELOS (ENTIDADES)
 # ==============================================================================
 
 class Filme:
-    """Representa o nó :Filme"""
-    def __init__(self, titulo, ano, sinopse, generos = [], caracteristicas = []):
+    def __init__(self, titulo, ano, sinopse, generos=None, caracteristicas=None):
         self.titulo = titulo
         self.ano = ano
         self.sinopse = sinopse
-        self.generos = generos
-        self.caracteristicas = caracteristicas
+        self.generos = generos or []
+        self.caracteristicas = caracteristicas or []
 
     def to_dict(self):
-        """Retorna um dicionário para os parâmetros da query Cypher"""
-        return {
-            "titulo": self.titulo,
-            "ano": self.ano,
-            "sinopse": self.sinopse,
-        }
+        return {"titulo": self.titulo, "ano": self.ano, "sinopse": self.sinopse}
+
 
 class Pessoa:
-    """Representa o nó :Pessoa (Ator)"""
-    def __init__(self, nome, filmes_atuados = []):
+    def __init__(self, nome, filmes_atuados=None):
         self.nome = nome
-        self.filmes_atuados = filmes_atuados # Lista de títulos de filmes
+        self.filmes_atuados = filmes_atuados or []
 
     def to_dict(self):
-        """Retorna um dicionário para os parâmetros da query Cypher"""
         return {"nome": self.nome}
+
 
 class Genero:
-    """Representa o nó :Gênero"""
     def __init__(self, nome):
         self.nome = nome
 
     def to_dict(self):
-        """Retorna um dicionário para os parâmetros da query Cypher"""
         return {"nome": self.nome}
+
 
 class Caracteristica:
-    """Representa o nó :Caracteristica"""
     def __init__(self, nome):
         self.nome = nome
 
     def to_dict(self):
-        """Retorna um dicionário para os parâmetros da query Cypher"""
         return {"nome": self.nome}
 
+
 # ==============================================================================
-# CLASSES DAO (DATA ACCESS OBJECTS)
+# DAOs (DATA ACCESS OBJECTS)
 # ==============================================================================
 
 class FilmeDAO:
-    """Controla todas as operações relacionadas aos Filmes"""
-    def __init__(self) -> None:
-        self.neo4j_driver = Neo4jDriver.get_driver()
+    def __init__(self):
+        self.driver = Neo4jDriver.get_driver()
 
+    # ------------------- CREATE -----------------------
     def add_filme(self, filme: Filme):
-        """
-        Cria um nó :Filme e o conecta aos seus :Genero e :Caracteristica
-        """
-        with self.neo4j_driver.session() as session:
-            # 1. Cria o nó :Filme
+        with self.driver.session() as session:
+            # Criar filme
             session.run("""
                 MERGE (f:Filme {titulo: $titulo})
                 SET f.ano = $ano, f.sinopse = $sinopse
             """, **filme.to_dict())
-            
-            # 2. Conecta o filme aos seus gêneros
-            for genero_nome in filme.generos:
+
+            # Gêneros
+            for genero in filme.generos:
                 session.run("""
                     MATCH (f:Filme {titulo: $titulo})
-                    MERGE (g:Gênero {nome: $genero_nome})
-                    MERGE (f)-[:É_DO_GÊNERO]->(g)
-                """, titulo=filme.titulo, genero_nome=genero_nome)
+                    MERGE (g:Genero {nome: $g})
+                    MERGE (f)-[:TEM_GENERO]->(g)
+                """, titulo=filme.titulo, g=genero)
 
-            # 3. Conecta o filme às suas características
-            for carac_nome in filme.caracteristicas:
+            # Características
+            for car in filme.caracteristicas:
                 session.run("""
                     MATCH (f:Filme {titulo: $titulo})
-                    MERGE (c:Caracteristica {nome: $carac_nome})
-                    MERGE (f)-[:POSSUI_CARACTERISTICA]->(c)
-                """, titulo=filme.titulo, carac_nome=carac_nome)
+                    MERGE (c:Caracteristica {nome: $c})
+                    MERGE (f)-[:TEM_CARAC]->(c)
+                """, titulo=filme.titulo, c=car)
 
-    def get_filmes_por_caracteristica(self, caracteristica_nome):
-        """Busca filmes que possuem uma determinada característica"""
-        with self.neo4j_driver.session() as session:
+    # ------------------- READ -------------------------
+    def list_filmes(self):
+        with self.driver.session() as session:
+            result = session.run("MATCH (f:Filme) RETURN f.titulo AS titulo, f.ano AS ano")
+            return [r.data() for r in result]
+
+    def get_filme(self, titulo):
+        with self.driver.session() as session:
             result = session.run("""
-                MATCH (f:Filme)-[:POSSUI_CARACTERISTICA]->(c:Caracteristica {nome: $nome})
-                RETURN f.titulo AS titulo, f.ano AS ano
-            """, nome=caracteristica_nome)
-            return [record.data() for record in result]
+                MATCH (f:Filme {titulo: $titulo})
+                RETURN f
+            """, titulo=titulo)
+            rec = result.single()
+            return rec["f"] if rec else None
+
+    # ------------------- UPDATE -----------------------
+    def update_filme(self, titulo, novo_titulo=None, ano=None, sinopse=None):
+        with self.driver.session() as session:
+            session.run("""
+                MATCH (f:Filme {titulo: $titulo})
+                SET f.titulo = COALESCE($novo_titulo, f.titulo),
+                    f.ano = COALESCE($ano, f.ano),
+                    f.sinopse = COALESCE($sinopse, f.sinopse)
+            """, titulo=titulo, novo_titulo=novo_titulo, ano=ano, sinopse=sinopse)
+
+    # ------------------- DELETE -----------------------
+    def delete_filme(self, titulo):
+        with self.driver.session() as session:
+            session.run("""
+                MATCH (f:Filme {titulo: $titulo})
+                DETACH DELETE f
+            """, titulo=titulo)
+
 
 class PessoaDAO:
-    """Controla todas as operações relacionadas às Pessoas (Atores)"""
-    def __init__(self) -> None:
-        self.neo4j_driver = Neo4jDriver.get_driver()
+    def __init__(self):
+        self.driver = Neo4jDriver.get_driver()
 
+    # CREATE
     def add_pessoa(self, pessoa: Pessoa):
-        """Cria um nó :Pessoa e o conecta aos filmes que atuou"""
-        
-        # 1. Cria o nó :Pessoa (ator)
-        self.neo4j_driver.execute_query("""
-            MERGE (p:Pessoa {nome: $nome})
-        """, **pessoa.to_dict())
-        
-        # 2. Conecta a pessoa aos filmes (Relação :ATUOU_EM)
-        for titulo_filme in pessoa.filmes_atuados:
-            self.neo4j_driver.execute_query("""
-                MATCH (p:Pessoa {nome: $nome_pessoa})
-                MATCH (f:Filme {titulo: $titulo_filme})
-                MERGE (p)-[:ATUOU_EM]->(f)
-            """, nome_pessoa=pessoa.nome, titulo_filme=titulo_filme)
+        with self.driver.session() as session:
+            session.run("""MERGE (p:Pessoa {nome: $nome})""", **pessoa.to_dict())
 
-    def get_filmes_por_ator(self, nome_ator):
-        """Busca todos os filmes em que um ator atuou"""
-        with self.neo4j_driver.session() as session:
-            result = session.run("""
-                MATCH (p:Pessoa {nome: $nome})-[:ATUOU_EM]->(f:Filme)
-                RETURN f.titulo AS titulo, f.ano AS ano
-            """, nome=nome_ator)
-            return [record.data() for record in result]
+            for filme in pessoa.filmes_atuados:
+                session.run("""
+                    MATCH (p:Pessoa {nome: $p})
+                    MATCH (f:Filme {titulo: $f})
+                    MERGE (p)-[:ATUOU_EM]->(f)
+                """, p=pessoa.nome, f=filme)
+
+    # READ
+    def list_pessoas(self):
+        with self.driver.session() as session:
+            result = session.run("""MATCH (p:Pessoa) RETURN p.nome AS nome""")
+            return [r.data() for r in result]
+
+    # UPDATE
+    def update_pessoa(self, nome, novo_nome):
+        with self.driver.session() as session:
+            session.run("""
+                MATCH (p:Pessoa {nome: $nome})
+                SET p.nome = $novo_nome
+            """, nome=nome, novo_nome=novo_nome)
+
+    # DELETE
+    def delete_pessoa(self, nome):
+        with self.driver.session() as session:
+            session.run("""
+                MATCH (p:Pessoa {nome: $nome})
+                DETACH DELETE p
+            """, nome=nome)
+
 
 class GeneroDAO:
-    """Controla todas as operações relacionadas aos Gêneros"""
-    def __init__(self) -> None:
-        self.neo4j_driver = Neo4jDriver.get_driver()
+    def __init__(self):
+        self.driver = Neo4jDriver.get_driver()
 
     def add_genero(self, genero: Genero):
-        """Cria um nó :Gênero"""
-        self.neo4j_driver.execute_query("""
-            MERGE (g:Gênero {nome: $nome})
+        self.driver.execute_query("""
+            MERGE (g:Genero {nome: $nome})
         """, **genero.to_dict())
 
-    def get_all_generos(self):
-        """Busca todos os gêneros cadastrados"""
-        with self.neo4j_driver.session() as session:
-            result = session.run("""
-                MATCH (g:Gênero)
-                RETURN g.nome AS nome
-                ORDER BY g.nome
-            """)
-            return [record.data() for record in result]
+    def list_generos(self):
+        with self.driver.session() as session:
+            result = session.run("MATCH (g:Genero) RETURN g.nome AS nome ORDER BY nome")
+            return [r.data() for r in result]
 
-    def get_filmes_por_genero(self, nome_genero):
-        """Busca todos os filmes de um determinado gênero"""
-        with self.neo4j_driver.session() as session:
-            result = session.run("""
-                MATCH (f:Filme)-[:É_DO_GÊNERO]->(g:Gênero {nome: $nome})
-                RETURN f.titulo AS titulo, f.ano AS ano
-                ORDER BY f.ano DESC
-            """, nome=nome_genero)
-            return [record.data() for record in result]
+    def update_genero(self, nome, novo_nome):
+        with self.driver.session() as session:
+            session.run("""
+                MATCH (g:Genero {nome: $nome})
+                SET g.nome = $novo_nome
+            """, nome=nome, novo_nome=novo_nome)
+
+    def delete_genero(self, nome):
+        with self.driver.session() as session:
+            session.run("""
+                MATCH (g:Genero {nome: $nome})
+                DETACH DELETE g
+            """, nome=nome)
+
 
 class CaracteristicaDAO:
-    """Controla todas as operações relacionadas às Características"""
-    def __init__(self) -> None:
-        self.neo4j_driver = Neo4jDriver.get_driver()
+    def __init__(self):
+        self.driver = Neo4jDriver.get_driver()
 
     def add_caracteristica(self, caracteristica: Caracteristica):
-        """Cria um nó :Caracteristica"""
-        self.neo4j_driver.execute_query("""
+        self.driver.execute_query("""
             MERGE (c:Caracteristica {nome: $nome})
         """, **caracteristica.to_dict())
 
-    def get_all_caracteristicas(self):
-        """Busca todas as características cadastradas"""
-        with self.neo4j_driver.session() as session:
-            result = session.run("""
-                MATCH (c:Caracteristica)
-                RETURN c.nome AS nome
-                ORDER BY c.nome
-            """)
-            return [record.data() for record in result]
+    def list_caracteristicas(self):
+        with self.driver.session() as session:
+            result = session.run("MATCH (c:Caracteristica) RETURN c.nome AS nome ORDER BY nome")
+            return [r.data() for r in result]
 
-    def get_filmes_por_caracteristica(self, nome_caracteristica):
-        """Busca todos os filmes com uma determinada característica"""
-        with self.neo4j_driver.session() as session:
-            result = session.run("""
-                MATCH (f:Filme)-[:POSSUI_CARACTERISTICA]->(c:Caracteristica {nome: $nome})
-                RETURN f.titulo AS titulo, f.ano AS ano
-                ORDER BY f.ano DESC
-            """, nome=nome_caracteristica)
-            return [record.data() for record in result]
+    def update_caracteristica(self, nome, novo_nome):
+        with self.driver.session() as session:
+            session.run("""
+                MATCH (c:Caracteristica {nome: $nome})
+                SET c.nome = $novo_nome
+            """, nome=nome, novo_nome=novo_nome)
 
+    def delete_caracteristica(self, nome):
+        with self.driver.session() as session:
+            session.run("""
+                MATCH (c:Caracteristica {nome: $nome})
+                DETACH DELETE c
+            """, nome=nome)
+
+
+# ==============================================================================
+# CLI (MENU DO TRABALHO)
+# ==============================================================================
+
+def menu_filmes():
+    dao = FilmeDAO()
+
+    while True:
+        print("""
+===== FILMES =====
+1 - Cadastrar filme
+2 - Listar filmes
+3 - Atualizar filme
+4 - Remover filme
+0 - Voltar
+""")
+        op = input("Opção: ")
+
+        if op == "1":
+            titulo = input("Título: ")
+            ano = int(input("Ano: "))
+            sinopse = input("Sinopse: ")
+
+            generos = input("Gêneros (separados por vírgula): ").split(",")
+            generos = [g.strip() for g in generos if g.strip()]
+
+            carac = input("Características (vírgula): ").split(",")
+            carac = [c.strip() for c in carac if c.strip()]
+
+            filme = Filme(titulo, ano, sinopse, generos, carac)
+            dao.add_filme(filme)
+            print("Filme cadastrado!")
+
+        elif op == "2":
+            for f in dao.list_filmes():
+                print(f)
+
+        elif op == "3":
+            titulo = input("Filme a atualizar: ")
+            novo = input("Novo título (Enter para manter): ") or None
+            ano = input("Novo ano (Enter para manter): ")
+            ano = int(ano) if ano else None
+            sinopse = input("Nova sinopse (Enter para manter): ") or None
+
+            dao.update_filme(titulo, novo_titulo=novo, ano=ano, sinopse=sinopse)
+            print("Atualizado!")
+
+        elif op == "4":
+            titulo = input("Título do filme: ")
+            dao.delete_filme(titulo)
+            print("Removido!")
+
+        elif op == "0":
+            break
+
+
+def menu_pessoas():
+    dao = PessoaDAO()
+
+    while True:
+        print("""
+===== PESSOAS =====
+1 - Cadastrar pessoa
+2 - Listar pessoas
+3 - Atualizar pessoa
+4 - Remover pessoa
+0 - Voltar
+""")
+        op = input("Opção: ")
+
+        if op == "1":
+            nome = input("Nome: ")
+            filmes = input("Filmes atuados (vírgula): ").split(",")
+            filmes = [f.strip() for f in filmes if f.strip()]
+            pessoa = Pessoa(nome, filmes)
+            dao.add_pessoa(pessoa)
+            print("Pessoa cadastrada!")
+
+        elif op == "2":
+            for p in dao.list_pessoas():
+                print(p)
+
+        elif op == "3":
+            nome = input("Nome atual: ")
+            novo = input("Novo nome: ")
+            dao.update_pessoa(nome, novo)
+            print("Atualizado!")
+
+        elif op == "4":
+            nome = input("Nome: ")
+            dao.delete_pessoa(nome)
+            print("Removido!")
+
+        elif op == "0":
+            break
+
+
+def menu_generos():
+    dao = GeneroDAO()
+
+    while True:
+        print("""
+===== GÊNEROS =====
+1 - Cadastrar gênero
+2 - Listar gêneros
+3 - Atualizar gênero
+4 - Remover gênero
+0 - Voltar
+""")
+        op = input("Opção: ")
+
+        if op == "1":
+            nome = input("Nome: ")
+            dao.add_genero(Genero(nome))
+            print("Cadastrado!")
+
+        elif op == "2":
+            for g in dao.list_generos():
+                print(g)
+
+        elif op == "3":
+            atual = input("Nome atual: ")
+            novo = input("Novo nome: ")
+            dao.update_genero(atual, novo)
+            print("Atualizado!")
+
+        elif op == "4":
+            nome = input("Nome: ")
+            dao.delete_genero(nome)
+            print("Removido!")
+
+        elif op == "0":
+            break
+
+
+def menu_caracteristicas():
+    dao = CaracteristicaDAO()
+
+    while True:
+        print("""
+===== CARACTERÍSTICAS =====
+1 - Cadastrar característica
+2 - Listar características
+3 - Atualizar característica
+4 - Remover característica
+0 - Voltar
+""")
+        op = input("Opção: ")
+
+        if op == "1":
+            nome = input("Nome: ")
+            dao.add_caracteristica(Caracteristica(nome))
+            print("Cadastrado!")
+
+        elif op == "2":
+            for c in dao.list_caracteristicas():
+                print(c)
+
+        elif op == "3":
+            atual = input("Nome atual: ")
+            novo = input("Novo nome: ")
+            dao.update_caracteristica(atual, novo)
+            print("Atualizado!")
+
+        elif op == "4":
+            nome = input("Nome: ")
+            dao.delete_caracteristica(nome)
+            print("Removido!")
+
+        elif op == "0":
+            break
+
+
+# ==============================================================================
+# MENU PRINCIPAL
+# ==============================================================================
+
+def main():
+    while True:
+        print("""
+===== CINEGRAPH — MENU PRINCIPAL =====
+1 - CRUD Filmes
+2 - CRUD Pessoas
+3 - CRUD Gêneros
+4 - CRUD Características
+0 - Sair
+""")
+        op = input("Opção: ")
+
+        if op == "1":
+            menu_filmes()
+        elif op == "2":
+            menu_pessoas()
+        elif op == "3":
+            menu_generos()
+        elif op == "4":
+            menu_caracteristicas()
+        elif op == "0":
+            print("Saindo...")
+            break
+
+
+if __name__ == "__main__":
+    main()
